@@ -565,6 +565,9 @@
             // Определяем, новое ли это сообщение (создано менее 5 секунд назад)
             const isNewMessage = Date.now() - parseInt(messageId.split('-')[0]) < 5000;
             
+            if (isNewMessage && !isAtBottom()) {
+                scrollToBottomBtn.style.display = 'block';
+            }
             // Рассчитываем изменение высоты контента
             const heightDiff = messagesContainer.scrollHeight - prevScrollHeight;
             
@@ -666,6 +669,26 @@
         
         socket.on('error', (message) => {
             alert(`Ошибка: ${message}`);
+        });
+        // === КОД ДЛЯ КНОПКИ ПРОКРУТКИ ВНИЗ ===
+        const scrollToBottomBtn = document.getElementById('scrollToBottom');
+
+            // Функция для проверки, находится ли пользователь внизу
+        function isAtBottom() {
+            return messagesContainer.scrollHeight - messagesContainer.clientHeight <= messagesContainer.scrollTop + 50;
+        }
+
+            // Обработчик клика по кнопке
+        scrollToBottomBtn.addEventListener('click', () => {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            scrollToBottomBtn.style.display = 'none';
+        });
+
+            // Скрываем кнопку при прокрутке вниз
+        messagesContainer.addEventListener('scroll', () => {
+            if (isAtBottom()) {
+                scrollToBottomBtn.style.display = 'none';
+            }
         });
     </script>
 </body>

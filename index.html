@@ -27,7 +27,13 @@
             bottom: 70px;
             z-index: 100;
             cursor: pointer;
-            transition: opacity 0.3s;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+            transform: translateY(20px);
+            opacity: 0;
+        }
+
+        #scrollToBottom.show {
+            transform: translateY(0);
             opacity: 0.9;
         }
 
@@ -113,6 +119,10 @@
         }
         
         .chat-messages {
+            will-change: transform;
+            backface-visibility: hidden;
+            perspective: 1000px;
+            transform-style: preserve-3d;
             flex: 1;
             padding: 20px;
             overflow-y: auto;
@@ -149,6 +159,8 @@
         .message-self {
             margin-left: auto;
             text-align: right;
+            transform: translateZ(0);
+            backface-visibility: hidden;
         }
         
         .message-sender {
@@ -360,6 +372,9 @@
     </div>
 
     <script>
+        let lastAddedMessageId = null;
+        let isUserScrolling = false;
+        let scrollTimeout;
         // Генерация ID пользователя (4 цифры)
         const userId = Math.floor(1000 + Math.random() * 9000).toString();
         document.getElementById('userIdDisplay').textContent = userId;
@@ -534,17 +549,15 @@
         });
         
         // Добавить сообщение в чат
+        // Функция добавления сообщения
         function addMessageToChat(messageId, senderId, message, isSelf = false) {
             // Проверяем, не было ли уже такого сообщения
             if (document.getElementById(`msg-${messageId}`)) return;
             
-            // Сохраняем текущее состояние прокрутки
-            const wasAtBottom = 
-                messagesContainer.scrollHeight - messagesContainer.clientHeight <= 
-                messagesContainer.scrollTop + 50;
-            
+            // Сохраняем состояние прокрутки
             const prevScrollHeight = messagesContainer.scrollHeight;
             const prevScrollTop = messagesContainer.scrollTop;
+            const wasAtBottom = prevScrollHeight - prevScrollTop <= messagesContainer.clientHeight + 50;
             
             // Создаем элемент сообщения
             const messageElement = document.createElement('div');
@@ -562,23 +575,28 @@
             // Добавляем сообщение в контейнер
             messagesContainer.appendChild(messageElement);
             
-            // Определяем, новое ли это сообщение (создано менее 5 секунд назад)
-            const isNewMessage = Date.now() - parseInt(messageId.split('-')[0]) < 5000;
-            
-            if (isNewMessage && !isAtBottom()) {
-                scrollToBottomBtn.style.display = 'block';
-            }
-            // Рассчитываем изменение высоты контента
+            // Рассчитываем изменение высоты
             const heightDiff = messagesContainer.scrollHeight - prevScrollHeight;
             
-            // Восстанавливаем позицию прокрутки с учетом новой высоты
-            messagesContainer.scrollTop = prevScrollTop + heightDiff;
-            
-            // Автоматическая прокрутка вниз только если:
-            // 1. Пользователь уже был внизу
-            // 2. И это новое сообщение
-            if (wasAtBottom && isNewMessage) {
+            // Восстанавливаем позицию прокрутки
+            if (!wasAtBottom && !isSelf) {
+                messagesContainer.scrollTop = prevScrollTop + heightDiff;
+            } else {
                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
+            
+            // Запоминаем последнее добавленное сообщение
+            lastAddedMessageId = messageId;
+            
+            // Проверяем, новое ли это сообщение
+            const isNewMessage = Date.now() - parseInt(messageId.split('-')[0]) < 5000;
+            
+            // Показываем кнопку "Вниз" при необходимости
+            if (isNewMessage && !isAtBottom()) {
+                scrollToBottomBtn.style.display = 'block';
+                setTimeout(() => {
+                    scrollToBottomBtn.classList.add('show');
+                }, 10);
             }
         }
         
@@ -621,29 +639,37 @@
         });
         
         socket.on('new_message', (data) => {
-            if (data.roomId === currentRoomId) {
-                addMessageToChat(data.id, data.userId, data.message, data.userId === userId);
+            if (data.roomId === currentRoomId && data.id !== lastAddedMessageId) {
+                // Если пользователь активно скроллит, добавляем плавно
+                if (isUserScrolling) {
+                    setTimeout(() => {
+                        addMessageToChat(data.id, data.userId, data.message, data.userId === userId);
+                    }, 300);
+                } else {
+                    addMessageToChat(data.id, data.userId, data.message, data.userId === userId);
+                }
             }
         });
         
         socket.on('room_messages', (data) => {
             if (data.roomId === currentRoomId) {
                 // Сохраняем позицию прокрутки
-                const prevScrollHeight = messagesContainer.scrollHeight;
                 const prevScrollTop = messagesContainer.scrollTop;
+                const wasAtBottom = isAtBottom();
                 
-                // Очищаем и добавляем сообщения
+                // Очищаем контейнер
                 messagesContainer.innerHTML = '';
+                
+                // Добавляем сообщения
                 data.messages.forEach(msg => {
-                addMessageToChat(msg.id, msg.userId, msg.message, msg.userId === userId);
+                    addMessageToChat(msg.id, msg.userId, msg.message, msg.userId === userId);
                 });
                 
                 // Восстанавливаем позицию прокрутки
-                messagesContainer.scrollTop = prevScrollTop;
-                
-                // Прокручиваем вниз только если не было прокрутки
-                if (prevScrollTop === 0) {
-                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                if (!wasAtBottom) {
+                    messagesContainer.scrollTop = prevScrollTop;
+                } else {
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
                 }
             }
         });
@@ -675,17 +701,28 @@
 
             // Функция для проверки, находится ли пользователь внизу
         function isAtBottom() {
-            return messagesContainer.scrollHeight - messagesContainer.clientHeight <= messagesContainer.scrollTop + 50;
+            return messagesContainer.scrollHeight - messagesContainer.clientHeight <= 
+                messagesContainer.scrollTop + 50;
         }
 
             // Обработчик клика по кнопке
         scrollToBottomBtn.addEventListener('click', () => {
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
-            scrollToBottomBtn.style.display = 'none';
+            scrollToBottomBtn.classList.remove('show');
+            setTimeout(() => {
+                scrollToBottomBtn.style.display = 'none';
+            }, 300);
         });
 
             // Скрываем кнопку при прокрутке вниз
         messagesContainer.addEventListener('scroll', () => {
+            isUserScrolling = true;
+            clearTimeout(scrollTimeout);
+            
+            scrollTimeout = setTimeout(() => {
+                isUserScrolling = false;
+            }, 100);
+            
             if (isAtBottom()) {
                 scrollToBottomBtn.style.display = 'none';
             }

@@ -700,7 +700,11 @@
         });
                 
         socket.on('room_expiration', (minutes) => {
-            roomExpiration.textContent = `Удаление через: ${minutes} мин`;
+            // Обновляем не чаще чем раз в 5 секунд
+            if (Date.now() - lastExpirationUpdate > 60000) {
+                roomExpiration.textContent = `Удаление через: ${minutes} мин`;
+                lastExpirationUpdate = Date.now();
+            }
         });
         
         socket.on('room_deleted', (roomId) => {

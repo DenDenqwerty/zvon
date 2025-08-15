@@ -21,7 +21,21 @@
             box-sizing: border-box;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
-        
+        #scrollToBottom {
+            position: absolute;
+            right: 20px;
+            bottom: 70px;
+            z-index: 100;
+            cursor: pointer;
+            transition: opacity 0.3s;
+            opacity: 0.9;
+        }
+
+        #scrollToBottom:hover {
+            opacity: 1;
+            background-color: var(--primary-dark) !important;
+        }
+
         body {
             background-color: var(--dark-bg);
             color: var(--text);
@@ -103,6 +117,27 @@
             padding: 20px;
             overflow-y: auto;
             background-color: #1a1a1a;
+            scrollbar-width: thin;
+            scrollbar-color: #7e57c2 #1a1a1a;
+        }
+
+        .chat-messages::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .chat-messages::-webkit-scrollbar-track {
+            background: #1a1a1a;
+            border-radius: 4px;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb {
+            background-color: #7e57c2;
+            border-radius: 4px;
+            border: 1px solid #5e35b1;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb:hover {
+            background-color: #5e35b1;
         }
         
         .message {
@@ -301,6 +336,10 @@
                     <span id="currentRoomName" style="font-weight: bold; font-size: 1.2rem;"></span>
                     <span id="roomExpiration" style="font-size: 0.9rem; color: var(--text-secondary); margin-left: 10px;"></span>
                 </div>
+                <!-- Добавьте эту кнопку -->
+                <button id="scrollToBottom" style="display: none; background: var(--primary); color: white; border: none; border-radius: 12px; padding: 5px 10px; font-size: 0.8rem; margin-left: 10px;">
+                    Вниз ↓
+                </button>
             </div>
             
             <div class="chat-messages" id="messagesContainer">
@@ -499,6 +538,15 @@
             // Проверяем, не было ли уже такого сообщения
             if (document.getElementById(`msg-${messageId}`)) return;
             
+            // Сохраняем текущее состояние прокрутки
+            const wasAtBottom = 
+                messagesContainer.scrollHeight - messagesContainer.clientHeight <= 
+                messagesContainer.scrollTop + 50;
+            
+            const prevScrollHeight = messagesContainer.scrollHeight;
+            const prevScrollTop = messagesContainer.scrollTop;
+            
+            // Создаем элемент сообщения
             const messageElement = document.createElement('div');
             messageElement.id = `msg-${messageId}`;
             messageElement.className = `message ${isSelf ? 'message-self' : 'message-other'}`;
@@ -511,8 +559,24 @@
                 <div class="message-time">${time}</div>
             `;
             
+            // Добавляем сообщение в контейнер
             messagesContainer.appendChild(messageElement);
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            
+            // Определяем, новое ли это сообщение (создано менее 5 секунд назад)
+            const isNewMessage = Date.now() - parseInt(messageId.split('-')[0]) < 5000;
+            
+            // Рассчитываем изменение высоты контента
+            const heightDiff = messagesContainer.scrollHeight - prevScrollHeight;
+            
+            // Восстанавливаем позицию прокрутки с учетом новой высоты
+            messagesContainer.scrollTop = prevScrollTop + heightDiff;
+            
+            // Автоматическая прокрутка вниз только если:
+            // 1. Пользователь уже был внизу
+            // 2. И это новое сообщение
+            if (wasAtBottom && isNewMessage) {
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
         }
         
         // Обновление списка комнат
@@ -561,10 +625,23 @@
         
         socket.on('room_messages', (data) => {
             if (data.roomId === currentRoomId) {
+                // Сохраняем позицию прокрутки
+                const prevScrollHeight = messagesContainer.scrollHeight;
+                const prevScrollTop = messagesContainer.scrollTop;
+                
+                // Очищаем и добавляем сообщения
                 messagesContainer.innerHTML = '';
                 data.messages.forEach(msg => {
-                    addMessageToChat(msg.id, msg.userId, msg.message, msg.userId === userId);
+                addMessageToChat(msg.id, msg.userId, msg.message, msg.userId === userId);
                 });
+                
+                // Восстанавливаем позицию прокрутки
+                messagesContainer.scrollTop = prevScrollTop;
+                
+                // Прокручиваем вниз только если не было прокрутки
+                if (prevScrollTop === 0) {
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                }
             }
         });
         

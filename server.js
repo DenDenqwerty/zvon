@@ -2,40 +2,46 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const path = require('path'); // Добавляем модуль для работы с путями
+const path = require('path');
 
 const app = express();
 app.use(cors());
-
-// Добавляем middleware для обслуживания статических файлов
 app.use(express.static(path.join(__dirname)));
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"]
-  }
+  },
+  transports: ['websocket', 'polling']
 });
 
-// Структуры данных
-const rooms = new Map();       // roomId -> { users: Set, messages: [], createdAt }
-const userRooms = new Map();   // userId -> Set(roomId)
-const ROOM_EXPIRATION_MINUTES = 5;
+// Константы
+const ROOM_EXPIRATION_MINUTES = 5; // 5 минут для теста
 
-// Генерация комнаты
+// Структуры данных
+const rooms = new Map();
+const userRooms = new Map();
+
+// Функции работы с комнатами
 function createRoom(roomId, userIds) {
+  const expiresAt = Date.now() + ROOM_EXPIRATION_MINUTES * 60 * 1000;
+  
   const room = {
     id: roomId,
     users: new Set(userIds),
     messages: [],
-    createdAt: new Date(),
-    timer: null
+    createdAt: Date.now(),
+    expiresAt: expiresAt,
+    timer: setTimeout(() => deleteRoom(roomId), ROOM_EXPIRATION_MINUTES * 60 * 1000)
   };
   
   rooms.set(roomId, room);
   
-  // Добавляем комнату пользователям
   userIds.forEach(userId => {
     if (!userRooms.has(userId)) {
       userRooms.set(userId, new Set());
@@ -43,21 +49,18 @@ function createRoom(roomId, userIds) {
     userRooms.get(userId).add(roomId);
   });
   
-  // Устанавливаем таймер удаления
-  room.timer = setTimeout(() => {
-    deleteRoom(roomId);
-  }, ROOM_EXPIRATION_MINUTES * 60 * 1000);
-  
   return room;
 }
 
-// Удаление комнаты
 function deleteRoom(roomId) {
   if (!rooms.has(roomId)) return;
   
   const room = rooms.get(roomId);
   
-  // Удаляем комнату у всех пользователей
+  // Уведомляем участников перед удалением
+  io.to(roomId).emit('room_deleted', roomId);
+  
+  // Удаляем комнату у пользователей
   room.users.forEach(userId => {
     if (userRooms.has(userId)) {
       userRooms.get(userId).delete(roomId);
@@ -71,22 +74,36 @@ function deleteRoom(roomId) {
   if (room.timer) clearTimeout(room.timer);
   
   rooms.delete(roomId);
-  io.emit('room_deleted', roomId);
 }
 
-// Обновление таймера комнаты
 function resetRoomTimer(roomId) {
   if (!rooms.has(roomId)) return;
   
   const room = rooms.get(roomId);
   if (room.timer) clearTimeout(room.timer);
   
-  room.timer = setTimeout(() => {
-    deleteRoom(roomId);
-  }, ROOM_EXPIRATION_MINUTES * 60 * 1000);
+  // Устанавливаем новое время удаления
+  room.expiresAt = Date.now() + ROOM_EXPIRATION_MINUTES * 60 * 1000;
+  
+  room.timer = setTimeout(() => deleteRoom(roomId), ROOM_EXPIRATION_MINUTES * 60 * 1000);
 }
 
-// Socket.io соединения
+function generateRoomId() {
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  let result = '';
+  
+  for (let i = 0; i < 2; i++) {
+    result += letters.charAt(Math.floor(Math.random() * letters.length));
+  }
+  
+  for (let i = 0; i < 2; i++) {
+    result += Math.floor(Math.random() * 10);
+  }
+  
+  return result;
+}
+
+// Socket.io обработчики
 io.on('connection', (socket) => {
   console.log('Новое подключение:', socket.id);
   
@@ -122,6 +139,8 @@ io.on('connection', (socket) => {
     }
     
     const room = rooms.get(roomId);
+    
+    // Добавляем пользователя в комнату
     if (!room.users.has(userId)) {
       room.users.add(userId);
       
@@ -140,27 +159,27 @@ io.on('connection', (socket) => {
       userCount: room.users.size
     });
     
-    // Обновляем время удаления
-    const minutesLeft = Math.ceil(
-      (room.timer._idleStart + room.timer._idleTimeout - Date.now()) / 60000
-    );
+    // Отправляем текущее время до удаления
+    const minutesLeft = Math.max(0, Math.ceil(
+      (room.expiresAt - Date.now()) / 60000
+    ));
     socket.emit('room_expiration', minutesLeft);
     
+    // Обновляем список комнат пользователя
     sendUserRooms(userId);
   });
   
   // Присоединение по ID пользователя
   socket.on('join_by_user', ({ userId, currentUserId }) => {
-    // Поиск существующей комнаты для двоих
     let existingRoom = null;
     
+    // Поиск существующей комнаты для двоих
     if (userRooms.has(currentUserId) && userRooms.has(userId)) {
-      const userRoomsSet = new Set([
-        ...userRooms.get(currentUserId),
-        ...userRooms.get(userId)
-      ]);
+      const commonRooms = [...userRooms.get(currentUserId)].filter(
+        roomId => userRooms.get(userId).has(roomId)
+      );
       
-      for (const roomId of userRoomsSet) {
+      for (const roomId of commonRooms) {
         const room = rooms.get(roomId);
         if (room && room.users.size === 2 && 
             room.users.has(currentUserId) && room.users.has(userId)) {
@@ -180,7 +199,7 @@ io.on('connection', (socket) => {
       const roomId = generateRoomId();
       createRoom(roomId, [currentUserId, userId]);
       
-      // Присоединяем пользователей
+      // Уведомляем обоих пользователей
       socket.emit('room_created', {
         id: roomId,
         userCount: 2
@@ -206,8 +225,12 @@ io.on('connection', (socket) => {
       return;
     }
     
+    // Генерируем уникальный ID для сообщения
+    const messageId = Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+    
     // Сохраняем сообщение
     room.messages.push({
+      id: messageId,
       userId,
       message,
       timestamp: new Date()
@@ -218,22 +241,37 @@ io.on('connection', (socket) => {
     
     // Отправляем сообщение всем в комнате
     io.to(roomId).emit('new_message', {
+      id: messageId,
       roomId,
       userId,
       message
     });
     
     // Обновляем время удаления для всех участников
-    const minutesLeft = Math.ceil(
-      (room.timer._idleStart + room.timer._idleTimeout - Date.now()) / 60000
-    );
+    const minutesLeft = Math.max(0, Math.ceil(
+      (room.expiresAt - Date.now()) / 60000
+    ));
     io.to(roomId).emit('room_expiration', minutesLeft);
   });
   
   // Запрос истории сообщений
   socket.on('get_messages', (roomId) => {
     if (rooms.has(roomId)) {
-      socket.emit('room_messages', rooms.get(roomId).messages);
+      socket.emit('room_messages', {
+        roomId,
+        messages: rooms.get(roomId).messages
+      });
+    }
+  });
+  
+  // Запрос времени до удаления комнаты
+  socket.on('get_room_expiration', (roomId) => {
+    if (rooms.has(roomId)) {
+      const room = rooms.get(roomId);
+      const minutesLeft = Math.max(0, Math.ceil(
+        (room.expiresAt - Date.now()) / 60000
+      ));
+      socket.emit('room_expiration', minutesLeft);
     }
   });
   
@@ -253,29 +291,7 @@ io.on('connection', (socket) => {
       socket.emit('user_rooms', []);
     }
   }
-  
-  // Генерация ID комнаты
-  function generateRoomId() {
-    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    let result = '';
-    
-    for (let i = 0; i < 2; i++) {
-      result += letters.charAt(Math.floor(Math.random() * letters.length));
-    }
-    
-    for (let i = 0; i < 2; i++) {
-      result += Math.floor(Math.random() * 10);
-    }
-    
-    return result;
-  }
 });
-
-// Добавляем обработчик для корневого пути
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
-
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {

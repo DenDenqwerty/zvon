@@ -108,6 +108,7 @@
         .message {
             margin-bottom: 15px;
             max-width: 70%;
+            animation: fadeIn 0.3s ease;
         }
         
         .message-self {
@@ -238,6 +239,12 @@
             font-size: 0.9rem;
             color: var(--text-secondary);
         }
+        
+        /* Анимации */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
 <body>
@@ -320,7 +327,9 @@
         document.getElementById('currentUserId').textContent = userId;
         
         // Подключение к серверу
-        const socket = io();
+        const socket = io(window.location.origin, {
+            transports: ['websocket']
+        });
         
         // Элементы интерфейса
         const loginModal = document.getElementById('loginModal');
@@ -342,6 +351,7 @@
         const sendMessageBtn = document.getElementById('sendMessageBtn');
         
         let currentRoomId = null;
+        let expirationInterval = null;
         
         // Генерация ID комнаты (2 буквы + 2 цифры)
         function generateRoomId() {
@@ -433,6 +443,12 @@
         
         // Функция присоединения к комнате
         function joinRoom(roomId) {
+            // Очищаем предыдущий интервал
+            if (expirationInterval) {
+                clearInterval(expirationInterval);
+                expirationInterval = null;
+            }
+            
             socket.emit('join_room', {
                 roomId,
                 userId
@@ -446,6 +462,16 @@
             
             // Запросить историю сообщений
             socket.emit('get_messages', roomId);
+            
+            // Запросить время до удаления
+            socket.emit('get_room_expiration', roomId);
+            
+            // Установить интервал для обновления времени каждую минуту
+            expirationInterval = setInterval(() => {
+                if (currentRoomId) {
+                    socket.emit('get_room_expiration', currentRoomId);
+                }
+            }, 60000); // 60 секунд
         }
         
         // Отправить сообщение
@@ -457,9 +483,6 @@
                     userId,
                     message
                 });
-                
-                // Добавляем сообщение локально
-                addMessageToChat(userId, message, true);
                 messageInput.value = '';
             }
         });
@@ -472,8 +495,12 @@
         });
         
         // Добавить сообщение в чат
-        function addMessageToChat(senderId, message, isSelf = false) {
+        function addMessageToChat(messageId, senderId, message, isSelf = false) {
+            // Проверяем, не было ли уже такого сообщения
+            if (document.getElementById(`msg-${messageId}`)) return;
+            
             const messageElement = document.createElement('div');
+            messageElement.id = `msg-${messageId}`;
             messageElement.className = `message ${isSelf ? 'message-self' : 'message-other'}`;
             
             const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
@@ -495,6 +522,7 @@
             rooms.forEach(room => {
                 const roomElement = document.createElement('div');
                 roomElement.className = `room-item ${room.id === currentRoomId ? 'active' : ''}`;
+                roomElement.setAttribute('data-room', room.id);
                 roomElement.innerHTML = `
                     <div class="room-id">${room.id}</div>
                     <div>Участников: ${room.userCount}</div>
@@ -506,11 +534,6 @@
                 
                 roomsContainer.appendChild(roomElement);
             });
-        }
-        
-        // Обновление таймера комнаты
-        function updateRoomTimer(minutes) {
-            roomExpiration.textContent = `Удаление через: ${minutes} мин`;
         }
         
         // Socket.io обработчики событий
@@ -532,19 +555,21 @@
         
         socket.on('new_message', (data) => {
             if (data.roomId === currentRoomId) {
-                addMessageToChat(data.userId, data.message, data.userId === userId);
+                addMessageToChat(data.id, data.userId, data.message, data.userId === userId);
             }
         });
         
-        socket.on('room_messages', (messages) => {
-            messagesContainer.innerHTML = '';
-            messages.forEach(msg => {
-                addMessageToChat(msg.userId, msg.message, msg.userId === userId);
-            });
+        socket.on('room_messages', (data) => {
+            if (data.roomId === currentRoomId) {
+                messagesContainer.innerHTML = '';
+                data.messages.forEach(msg => {
+                    addMessageToChat(msg.id, msg.userId, msg.message, msg.userId === userId);
+                });
+            }
         });
         
         socket.on('room_expiration', (minutes) => {
-            updateRoomTimer(minutes);
+            roomExpiration.textContent = `Удаление через: ${minutes} мин`;
         });
         
         socket.on('room_deleted', (roomId) => {
@@ -556,6 +581,10 @@
                 messageInput.disabled = true;
                 sendMessageBtn.disabled = true;
             }
+            
+            // Удалить комнату из списка
+            const roomElement = document.querySelector(`.room-item[data-room="${roomId}"]`);
+            if (roomElement) roomElement.remove();
         });
         
         socket.on('error', (message) => {
